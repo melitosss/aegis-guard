@@ -21,5 +21,25 @@ def _guarded_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_
 
 def enable_network_guard():
     """Attiva l'intercettatore di rete a livello globale."""
-    socket.create_connection = _guarded_connection
-    print("[AEGIS] Egress Network Guard attivato.")
+    global _original_create_connection
+
+    current_connection = socket.create_connection
+    if current_connection is _guarded_connection:
+        return
+
+    previous_delegate = _original_create_connection
+    try:
+        _original_create_connection = current_connection
+        socket.create_connection = _guarded_connection
+        print("[AEGIS] Egress Network Guard attivato.")
+    except BaseException:
+        if socket.create_connection is _guarded_connection:
+            socket.create_connection = current_connection
+        _original_create_connection = previous_delegate
+        raise
+
+
+def disable_network_guard():
+    """Ripristina il delegato se il guard è ancora installato."""
+    if socket.create_connection is _guarded_connection:
+        socket.create_connection = _original_create_connection

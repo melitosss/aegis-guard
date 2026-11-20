@@ -36,5 +36,25 @@ def _guarded_open(file, mode='r', buffering=-1, encoding=None, errors=None, newl
 
 def enable_fs_guard():
     """Attiva l'intercettatore del file system a livello globale."""
-    builtins.open = _guarded_open
-    print("[AEGIS] File System Supervisor attivato.")
+    global _original_open
+
+    current_open = builtins.open
+    if current_open is _guarded_open:
+        return
+
+    previous_delegate = _original_open
+    try:
+        _original_open = current_open
+        builtins.open = _guarded_open
+        print("[AEGIS] File System Supervisor attivato.")
+    except BaseException:
+        if builtins.open is _guarded_open:
+            builtins.open = current_open
+        _original_open = previous_delegate
+        raise
+
+
+def disable_fs_guard():
+    """Ripristina il delegato se il guard è ancora installato."""
+    if builtins.open is _guarded_open:
+        builtins.open = _original_open
