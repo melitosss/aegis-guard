@@ -1,3 +1,6 @@
+import errno
+import os
+import subprocess
 from unittest.mock import Mock
 
 import pytest
@@ -89,6 +92,133 @@ def test_blocks_when_commonpath_cannot_compare_paths(guarded_fs, monkeypatch):
     audit.assert_called_once_with(
         "fs_access", "BLOCKED", str(target), "Tentativo di Directory Traversal", mode="r"
     )
+
+
+def assert_workspace_blocked(guarded_fs, target, mode):
+    _, original_open, audit = guarded_fs
+    with pytest.raises(fs_guard.FileSecurityException, match="outside workspace"):
+        fs_guard._guarded_open(target, mode)
+
+    original_open.assert_not_called()
+    audit.assert_called_once_with(
+        "fs_access", "BLOCKED", str(target), "Tentativo di Directory Traversal", mode=mode
+    )
+
+
+@pytest.mark.parametrize("resolution_error", [None, errno.EACCES, errno.ELOOP])
+def test_blocks_canonical_path_escape_or_resolution_error(
+    guarded_fs, monkeypatch, resolution_error
+):
+    workspace, _, _ = guarded_fs
+    target = workspace / "report.txt"
+    outside = workspace.parent / "outside" / "report.txt"
+
+    def resolve(path, **kwargs):
+        requested = os.fspath(path)
+        if requested == str(workspace):
+            return str(workspace)
+        assert requested == str(target)
+        if resolution_error is not None:
+            raise OSError(resolution_error, "simulated resolution error")
+        return str(outside)
+
+    path_api = Mock(wraps=os.path)
+    path_api.realpath.side_effect = resolve
+    monkeypatch.setattr(fs_guard, "os", Mock(wraps=os, path=path_api))
+
+    assert_workspace_blocked(guarded_fs, target, "r")
+
+
+@pytest.mark.parametrize(
+    ("kind", "mode"),
+    [
+        ("file-outside", "r"),
+        ("directory-outside", "r"),
+        ("directory-outside", "w"),
+        ("file-inside", "r"),
+    ],
+)
+def test_symlink_workspace_containment(guarded_fs, kind, mode):
+    workspace, original_open, audit = guarded_fs
+    outside = workspace.parent / "outside"
+    outside.mkdir()
+    directory_link = kind == "directory-outside"
+    base = workspace if kind == "file-inside" else outside
+    destination = base if directory_link else base / "target.txt"
+    if not directory_link:
+        destination.touch()
+    elif mode == "r":
+        (destination / "report.txt").touch()
+
+    link = workspace / "linked"
+    try:
+        link.symlink_to(destination, target_is_directory=directory_link)
+    except NotImplementedError:
+        pytest.skip("symlink creation is unavailable")
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314 or exc.errno in {
+            errno.EACCES, errno.EPERM, errno.ENOSYS, errno.ENOTSUP
+        }:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+        raise
+
+    try:
+        target = link / "report.txt" if directory_link else link
+        if kind != "file-inside":
+            assert_workspace_blocked(guarded_fs, target, mode)
+        else:
+            assert fs_guard._guarded_open(target, mode) is original_open.return_value
+            original_open.assert_called_once_with(
+                target, mode, -1, None, None, None, True, None
+            )
+            audit.assert_called_once_with(
+                "fs_access", "ALLOWED", str(target), "Accesso consentito in safe zone", mode=mode
+            )
+    finally:
+        if directory_link and os.name == "nt":
+            link.rmdir()
+        else:
+            link.unlink()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions require Windows")
+def test_blocks_windows_junction_to_outside_workspace(guarded_fs):
+    workspace, _, _ = guarded_fs
+    outside = workspace.parent / "outside"
+    outside.mkdir()
+    (outside / "report.txt").touch()
+    junction = workspace / "linked"
+    cmd = os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe")
+    env = dict(
+        os.environ,
+        AEGIS_TEST_JUNCTION_LINK=str(junction.absolute()),
+        AEGIS_TEST_JUNCTION_TARGET=str(outside.absolute()),
+    )
+    try:
+        result = subprocess.run(
+            'cmd.exe /d /v:off /c mklink /J '
+            '"%AEGIS_TEST_JUNCTION_LINK%" "%AEGIS_TEST_JUNCTION_TARGET%"',
+            executable=cmd,
+            cwd=workspace.parent,
+            env=env,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except FileNotFoundError:
+        pytest.skip("junction creation is unavailable: cmd.exe not found")
+    assert result.returncode == 0, (
+        f"junction creation failed ({result.returncode}): "
+        f"{result.stdout} {result.stderr}"
+    )
+
+    try:
+        assert junction.resolve() == outside.resolve()
+        assert_workspace_blocked(guarded_fs, junction / "report.txt", "r")
+    finally:
+        junction.rmdir()
 
 
 @pytest.mark.temporary_security
