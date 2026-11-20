@@ -18,9 +18,10 @@ def guarded_fs(monkeypatch, tmp_path):
     return workspace, original_open, audit
 
 
-def test_allows_workspace_file_and_forwards_open_arguments(guarded_fs):
+@pytest.mark.parametrize("relative_path", ["report.txt", ".gitignore", ".env.local/report.txt"])
+def test_allows_workspace_file_and_forwards_open_arguments(guarded_fs, relative_path):
     workspace, original_open, audit = guarded_fs
-    target = workspace / "report.txt"
+    target = workspace / relative_path
 
     result = fs_guard._guarded_open(target, "w", buffering=1, encoding="utf-8")
 
@@ -31,17 +32,32 @@ def test_allows_workspace_file_and_forwards_open_arguments(guarded_fs):
     )
 
 
-@pytest.mark.parametrize("extension", [".env", ".key", ".pem", ".pyc"])
-def test_blocks_restricted_extension(guarded_fs, extension):
+@pytest.mark.parametrize(
+    ("filename", "extension"),
+    [
+        (".env", ".env"),
+        (".env.local", ".env"),
+        (".env.production", ".env"),
+        (".ENV", ".env"),
+        (".Env.local", ".env"),
+        ("config.ENV", ".env"),
+        ("config.env", ".env"),
+        ("config.key", ".key"),
+        ("config.pem", ".pem"),
+        ("config.pyc", ".pyc"),
+    ],
+)
+@pytest.mark.parametrize("mode", ["r", "w"])
+def test_blocks_restricted_filename(guarded_fs, filename, extension, mode):
     workspace, original_open, audit = guarded_fs
-    target = workspace / f"config{extension}"
+    target = workspace / filename
 
     with pytest.raises(fs_guard.FileSecurityException, match="files are restricted"):
-        fs_guard._guarded_open(target, "w")
+        fs_guard._guarded_open(target, mode)
 
     original_open.assert_not_called()
     audit.assert_called_once_with(
-        "fs_access", "BLOCKED", str(target), f"Violazione estensione ({extension})", mode="w"
+        "fs_access", "BLOCKED", str(target), f"Violazione estensione ({extension})", mode=mode
     )
 
 
