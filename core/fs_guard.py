@@ -21,7 +21,10 @@ def _guarded_open(file, mode='r', buffering=-1, encoding=None, errors=None, newl
         is_safe = False
 
     BLOCKED_EXTENSIONS = [".env", ".key", ".pem", ".pyc"]
+    filename = os.path.basename(target_path).lower()
     _, ext = os.path.splitext(target_path)
+    if filename == ".env" or filename.startswith(".env.") or ext.lower() == ".env":
+        ext = ".env"
 
     if ext in BLOCKED_EXTENSIONS:
         log_event("fs_access", "BLOCKED", target_path, f"Violazione estensione ({ext})", mode=mode)
