@@ -129,6 +129,36 @@ def test_blocks_canonical_path_escape_or_resolution_error(
     assert_workspace_blocked(guarded_fs, target, "r")
 
 
+@pytest.mark.parametrize("dangling", [False, True], ids=["missing-file", "dangling-link"])
+def test_resolution_fallback_for_missing_destination(guarded_fs, monkeypatch, dangling):
+    workspace, original_open, audit = guarded_fs
+    target = workspace / "report.txt"
+
+    def resolve(path, *, strict):
+        assert strict is True
+        requested = os.fspath(path)
+        if requested == str(workspace):
+            return str(workspace)
+        assert requested == str(target)
+        raise FileNotFoundError(str(target))
+
+    path_api = Mock(wraps=os.path, ALLOW_MISSING=None)
+    path_api.realpath.side_effect = resolve
+    lstat = Mock(return_value=object()) if dangling else Mock(side_effect=FileNotFoundError)
+    monkeypatch.setattr(fs_guard, "os", Mock(wraps=os, path=path_api, lstat=lstat))
+
+    if dangling:
+        assert_workspace_blocked(guarded_fs, target, "w")
+    else:
+        assert fs_guard._guarded_open(target, "w") is original_open.return_value
+        original_open.assert_called_once_with(target, "w", -1, None, None, None, True, None)
+        audit.assert_called_once_with(
+            "fs_access", "ALLOWED", str(target), "Accesso consentito in safe zone", mode="w"
+        )
+    assert lstat.call_count == 1
+    assert os.fspath(lstat.call_args.args[0]) == str(target)
+
+
 @pytest.mark.parametrize(
     ("kind", "mode"),
     [
