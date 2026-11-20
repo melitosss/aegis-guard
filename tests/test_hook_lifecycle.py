@@ -175,6 +175,95 @@ def test_disable_preserves_a_later_external_replacement(tmp_path, module, owner,
     )
 
 
+@pytest.mark.parametrize(
+    ("module", "owner", "attribute", "wrapper", "delegate"),
+    [
+        ("fs_guard", "builtins", "open", "_guarded_open", "_original_open"),
+        (
+            "network_guard",
+            "socket",
+            "create_connection",
+            "_guarded_connection",
+            "_original_create_connection",
+        ),
+    ],
+    ids=["filesystem", "network"],
+)
+@pytest.mark.parametrize(
+    "failure_point",
+    ["before-installation", "during-print", "after-external-replacement"],
+)
+def test_enable_rolls_back_on_activation_failure(
+    tmp_path, module, owner, attribute, wrapper, delegate, failure_point
+):
+    run_child(
+        tmp_path,
+        f"""
+        from core import {module} as guard
+
+        owner = {owner}
+        attribute = {attribute!r}
+        wrapper = guard.{wrapper}
+        previous_delegate = guard.{delegate}
+        prior_hook = Mock()
+        external_hook = Mock()
+        setattr(owner, attribute, prior_hook)
+        failure = RuntimeError("simulated activation failure")
+        failure_point = {failure_point!r}
+
+        class RejectInstallation:
+            def __getattr__(self, name):
+                return getattr(owner, name)
+
+            def __setattr__(self, name, value):
+                assert name == attribute
+                assert value is wrapper
+                assert getattr(owner, attribute) is prior_hook
+                raise failure
+
+        def fail_during_print(*args, **kwargs):
+            assert getattr(owner, attribute) is wrapper
+            if failure_point == "after-external-replacement":
+                setattr(owner, attribute, external_hook)
+            raise failure
+
+        if failure_point == "before-installation":
+            guard.{owner} = RejectInstallation()
+            guard.print = Mock()
+        else:
+            guard.print = Mock(side_effect=fail_during_print)
+
+        try:
+            guard.enable_{module}()
+        except RuntimeError as caught:
+            assert caught is failure
+        else:
+            raise AssertionError("The activation exception did not propagate")
+        finally:
+            guard.{owner} = owner
+
+        if failure_point == "before-installation":
+            guard.print.assert_not_called()
+        else:
+            guard.print.assert_called_once()
+
+        expected_hook = (
+            external_hook if failure_point == "after-external-replacement" else prior_hook
+        )
+        assert getattr(owner, attribute) is expected_hook
+        assert guard.{delegate} is previous_delegate
+
+        guard.print = Mock()
+        guard.enable_{module}()
+        guard.print.assert_called_once()
+        assert getattr(owner, attribute) is wrapper
+        assert guard.{delegate} is expected_hook
+        guard.disable_{module}()
+        assert getattr(owner, attribute) is expected_hook
+        """,
+    )
+
+
 @agent_opt_in
 def test_agent_import_has_no_side_effects(tmp_path):
     run_child(
