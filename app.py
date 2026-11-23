@@ -3,19 +3,19 @@ import pandas as pd
 import json
 import os
 
-st.set_page_config(page_title="Aegis Security Telemetry", page_icon="🛡️", layout="wide")
-st.title("🛡️ Aegis: Zero-Trust Telemetry Dashboard")
+st.set_page_config(page_title="Aegis Policy Telemetry", page_icon="🛡️", layout="wide")
+st.title("🛡️ Aegis Guard: Policy Telemetry")
 
 # --- NUOVO: SIDEBAR AZIENDALE ---
 with st.sidebar:
-    st.markdown("## ⚙️ Control Panel")
-    st.success("🟢 SYSTEM ONLINE")
+    st.markdown("## ⚙️ About this dashboard")
+    st.success("Local audit viewer")
     st.markdown("---")
     st.markdown("**Version:** 1.0.0-MVP")
-    st.markdown("**Engine:** Zero-Trust Python Hook")
-    st.markdown("**Environment:** `production`")
+    st.markdown("**Engine:** In-process Python hooks")
+    st.markdown("**Scope:** Proof of Concept")
     st.markdown("---")
-    st.caption("Aegis Security Gateway intercepting runtime OS calls.")
+    st.caption("Shows logged policy decisions for calls handled by the Python hooks.")
 # ---------------------------------
 
 LOG_FILE = "aegis_audit.jsonl"
@@ -41,9 +41,9 @@ else:
     col1, col2, col3 = st.columns(3)
     total = len(df)
     blocked = len(df[df['action'] == 'BLOCKED'])
-    col1.metric("Total Events Intercepted", total)
-    col2.metric("Threats Neutralized", blocked, delta="-Secured", delta_color="inverse")
-    col3.metric("Allowed Actions", total - blocked, delta="Normal")
+    col1.metric("Recorded Policy Decisions", total)
+    col2.metric("Blocked by Policy", blocked)
+    col3.metric("Allowed by Policy", total - blocked)
 
     st.divider()
     
@@ -56,7 +56,7 @@ else:
    # ... codice precedente (metriche e grafico a barre) ...
     
     with col_table:
-        st.subheader("Top Targeted Assets (Blocked)")
+        st.subheader("Most Frequent Blocked Targets")
         blocked_df = df[df['action'] == 'BLOCKED']
         if not blocked_df.empty:
             # TABELLA 1: Aggiunto hide_index=True

@@ -1,38 +1,52 @@
-# 🛡️ Aegis: Zero-Trust Execution Guard for Autonomous AI Agents
+# 🛡️ Aegis Guard
 
-## Overview
-L'adozione crescente di agenti IA (LLM-based) con capacità di esecuzione autonoma pone sfide di sicurezza critiche. Fornire a un LLM accesso non filtrato al file system locale, a database aziendali o alla rete espone l'infrastruttura a rischi severi, tra cui data exfiltration, esecuzione di codice arbitrario (RCE) e attacchi di tipo *Indirect Prompt Injection*.
+Aegis Guard è un Proof of Concept di policy e telemetria per agenti Python. Usa due hook installati tramite monkey patching per registrare e applicare decisioni su specifiche operazioni di I/O nel processo.
 
-Aegis è un prototipo di security sidecar progettato per applicare un modello Zero-Trust alle azioni eseguite da agenti IA autonomi. A differenza degli approcci tradizionali basati sull'analisi euristica del prompt (soggetti a bypass), Aegis opera a livello di runtime, intercettando e filtrando le chiamate di sistema (I/O) prima che l'azione venga effettivamente completata.
+La policy si applica alle chiamate che attraversano gli hook mentre sono attivi. Il progetto non fornisce isolamento a livello di sistema operativo, controllo generale del traffico di rete, protezione generale contro l'esfiltrazione o garanzie di integrità del log.
 
-## Core Features & Architecture
+## Architettura
 
-Il sistema implementa l'isolamento dell'agente attraverso tre moduli principali:
+- **Filesystem** (`core/fs_guard.py`) — L'hook su `builtins.open` verifica il percorso rispetto al workspace, applica una blocklist di nomi ed estensioni e blocca l'accesso al percorso del log attraverso l'API intercettata.
+- **Rete** (`core/network_guard.py`) — L'hook su `socket.create_connection` confronta il nome host ricevuto con una allowlist.
+- **Audit** (`core/logger.py`) — Le decisioni di policy sono registrate in JSONL. `ALLOWED` indica che la policy consente di tentare l'operazione, il cui esito dipende dall'I/O successivo.
+- **Dashboard** (`app.py`) — Streamlit e Pandas leggono il JSONL e mostrano i conteggi e i record al caricamento e al refresh manuale.
 
-1. **Egress Network Controller (`core/network_guard.py`)**
-   Implementa un interception layer tramite *monkey-patching* del modulo `socket` (`socket.create_connection`).
-   - Fornisce validazione strict-allowlist (Default-Deny) per il traffico TCP/HTTP in uscita.
-   - Previene l'esfiltrazione di dati verso endpoint non autorizzati.
+## Quick Start
 
-2. **File System Access Supervisor (`core/fs_guard.py`)**
-   Agisce tramite overriding della built-in function `open()`.
-   - Applica un confinamento logico (Safe Zone/Chroot-like) basato su path resolution (`os.path.commonpath`).
-   - Neutralizza tentativi di *Directory Traversal* e applica blocklist basate sull'estensione per proteggere asset sensibili (es. `.env`, `.pem`, file di configurazione).
+I comandi usano PowerShell su Windows e vanno eseguiti dalla radice del repository. Il riepilogo della suite si riferisce a Python 3.13.3.
 
-3. **Telemetry & Observability Pipeline (`app.py` & `core/logger.py`)**
-   Garantisce l'osservabilità in tempo reale del comportamento dell'agente.
-   - **Audit Logging:** Ogni operazione intercettata (consentita o bloccata) viene registrata in un log strutturato (JSONL) per l'analisi forense.
-   - **Real-time Dashboard:** Un'interfaccia sviluppata in Streamlit processa il data stream (tramite Pandas), visualizzando metriche di compromissione, distribuzioni dei target e un audit log interattivo.
+### Ambiente virtuale e dipendenze
 
-## Technology Stack
-- **Core Engine:** Python 3 (Runtime hooking, I/O interception)
-- **Data Pipeline:** JSONL (Structured logging), Pandas (Data transformation)
-- **Visualization:** Streamlit (Real-time dashboarding)
+```powershell
+python --version
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-test.txt
+```
 
-## Quick Start (PoC Setup)
+### Test
 
-L'ambiente di test dimostra l'efficacia dei security guardrail contro simulazioni di comportamenti anomali da parte dell'agente.
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
 
-1. **Installazione dipendenze:**
-   ```bash
-   pip install -r requirements.txt
+Ultima esecuzione riportata su Python 3.13.3: **61 PASS, 10 SKIP, 0 FAIL, 0 XFAIL**. Pytest mostra le motivazioni degli skip a fine esecuzione. Quattro casi con symlink possono essere saltati quando la creazione dei link è indisponibile o non autorizzata. Il caso junction richiede Windows e `cmd.exe`.
+
+Sei casi relativi all'import e al lifecycle della demo richiedono `AEGIS_TEST_AGENT=1`. Questi test usano I/O simulato per le azioni della demo.
+
+```powershell
+$env:AEGIS_TEST_AGENT = '1'
+.\.venv\Scripts\python.exe -m pytest
+Remove-Item Env:AEGIS_TEST_AGENT
+```
+
+### Demo e dashboard
+
+**La demo può effettuare richieste HTTP/HTTPS reali e operazioni sul filesystem.** Può aggiungere righe a `aegis_audit.jsonl` e creare o sovrascrivere `temp_report.txt`. Eseguila in una copia locale di prova.
+
+```powershell
+.\.venv\Scripts\python.exe test_agent.py
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+Avvia demo e dashboard dalla stessa radice del repository. La dashboard legge il log da quella directory. Usa **Refresh Telemetry** per ricaricare i dati quando sono presenti eventi.

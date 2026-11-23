@@ -4,3 +4,13 @@ temp_report.txt
 config.env
 __pycache__/
 .vscode/
+
+# Local environment and test artifacts
+.env
+.env.*
+.venv/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+*.pyc
