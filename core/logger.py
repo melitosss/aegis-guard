@@ -1,6 +1,6 @@
 import json
 import datetime
-import os
+from io import open as _open_audit
 
 LOG_FILE = "aegis_audit.jsonl"
 
@@ -16,7 +16,5 @@ def log_event(event_type, action, target, detail="", mode=None, port=None):
     if mode: event["mode"] = mode
     if port: event["port"] = port
     
-    # Usiamo builtins.open per evitare conflitti con il nostro FS Guard
-    import builtins
-    with builtins.open(LOG_FILE, "a") as f:
+    with _open_audit(LOG_FILE, "a") as f:
         f.write(json.dumps(event) + "\n")

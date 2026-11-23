@@ -1,6 +1,7 @@
 import builtins
 import os
-from .logger import log_event, LOG_FILE
+from . import logger
+from .logger import log_event
 
 SAFE_WORKSPACE = os.path.abspath(os.getcwd())
 _original_open = builtins.open
@@ -36,22 +37,44 @@ def _resolve_target(file):
         missing.append(name)
         path = parent or os.curdir
 
+def _resolve_audit_path(audit_file, workspace_real):
+    try:
+        os.stat(audit_file, follow_symlinks=False)
+    except FileNotFoundError:
+        parent, name = os.path.split(audit_file)
+        parent = parent or os.curdir
+        if os.path.abspath(parent) == SAFE_WORKSPACE:
+            parent = workspace_real
+        else:
+            parent = _resolve_target(parent)
+        return os.path.join(parent, name)
+    return _resolve_target(audit_file)
+
 def _guarded_open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, closefd=True, opener=None):
-    # Ignora i file interni di Python (es. importlib) e il nostro file di log
-    if isinstance(file, str) and (file.startswith('<') or os.path.abspath(file) == os.path.abspath(LOG_FILE)):
+    target_path = os.path.abspath(file)
+    audit_file = logger.LOG_FILE
+    is_audit = os.path.normcase(target_path) == os.path.normcase(os.path.abspath(audit_file))
+
+    # Ignora i file interni di Python (es. importlib).
+    if not is_audit and isinstance(file, str) and file.startswith('<'):
         return _original_open(file, mode, buffering, encoding, errors, newline, closefd, opener)
 
-    target_path = os.path.abspath(file)
-    
     try:
         common = os.path.commonpath([SAFE_WORKSPACE, target_path])
         is_safe = common == SAFE_WORKSPACE
-        if is_safe:
+        if is_safe and not is_audit:
             workspace_real = os.path.realpath(SAFE_WORKSPACE, strict=True)
             target_real = _resolve_target(file)
             is_safe = os.path.commonpath([workspace_real, target_real]) == workspace_real
+            if is_safe:
+                audit_real = _resolve_audit_path(audit_file, workspace_real)
+                is_audit = os.path.normcase(target_real) == os.path.normcase(audit_real)
     except (OSError, ValueError):
         is_safe = False
+
+    if is_audit:
+        log_event("fs_access", "BLOCKED", target_path, "Accesso diretto al log di audit", mode=mode)
+        raise FileSecurityException("File system policy violation: Direct audit log access blocked.")
 
     BLOCKED_EXTENSIONS = [".env", ".key", ".pem", ".pyc"]
     filename = os.path.basename(target_path).lower()
