@@ -1,3 +1,4 @@
+import builtins
 import errno
 import os
 import subprocess
@@ -5,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from core import fs_guard
+from core import fs_guard, logger
 
 
 @pytest.fixture
@@ -15,7 +16,9 @@ def guarded_fs(monkeypatch, tmp_path):
     original_open = Mock()
     audit = Mock()
     monkeypatch.setattr(fs_guard, "SAFE_WORKSPACE", str(workspace))
-    monkeypatch.setattr(fs_guard, "LOG_FILE", str(workspace / "audit.jsonl"))
+    audit_path = str(workspace / "audit.jsonl")
+    monkeypatch.setattr(logger, "LOG_FILE", audit_path)
+    monkeypatch.setattr(fs_guard, "LOG_FILE", audit_path, raising=False)
     monkeypatch.setattr(fs_guard, "_original_open", original_open)
     monkeypatch.setattr(fs_guard, "log_event", audit)
     return workspace, original_open, audit
@@ -251,18 +254,43 @@ def test_blocks_windows_junction_to_outside_workspace(guarded_fs):
         junction.rmdir()
 
 
-@pytest.mark.temporary_security
-@pytest.mark.xfail(
-    strict=False,
-    raises=AssertionError,
-    reason="Known limitation: direct access to the audit path bypasses guard telemetry",
-)
-def test_direct_audit_access_is_logged_or_blocked(guarded_fs):
+def assert_audit_access_blocked(guarded_fs, monkeypatch, target, mode):
     _, original_open, audit = guarded_fs
-    try:
-        fs_guard._guarded_open(fs_guard.LOG_FILE)
-    except fs_guard.FileSecurityException:
-        original_open.assert_not_called()
-        return
+    with pytest.raises(fs_guard.FileSecurityException):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(builtins, "open", fs_guard._guarded_open)
+            builtins.open(target, mode)
 
-    assert audit.called, "The guard delegated direct audit access without logging it"
+    original_open.assert_not_called()
+    (event,) = audit.call_args_list
+    assert event.args[:3] == ("fs_access", "BLOCKED", os.path.abspath(target))
+    assert event.kwargs["mode"] == mode
+
+
+@pytest.mark.parametrize("mode", ["r", "w", "a"])
+@pytest.mark.parametrize("as_string", [False, True], ids=["path", "str"])
+def test_blocks_direct_audit_access_before_file_exists(guarded_fs, monkeypatch, mode, as_string):
+    workspace, _, _ = guarded_fs
+    target = workspace / "audit.jsonl"
+    assert not target.exists()
+
+    assert_audit_access_blocked(guarded_fs, monkeypatch, str(target) if as_string else target, mode)
+    assert not target.exists()
+
+
+def test_blocks_resolved_alias_to_audit_file(guarded_fs, monkeypatch):
+    workspace, _, _ = guarded_fs
+    alias = workspace / "alias.jsonl"
+    audit_target = workspace.resolve() / "audit.jsonl"
+    realpath = os.path.realpath
+
+    def resolve(path, **kwargs):
+        if os.fspath(path) == str(alias):
+            return str(audit_target)
+        return realpath(path, **kwargs)
+
+    path_api = Mock(wraps=os.path)
+    path_api.realpath.side_effect = resolve
+    monkeypatch.setattr(fs_guard, "os", Mock(wraps=os, path=path_api))
+
+    assert_audit_access_blocked(guarded_fs, monkeypatch, alias, "r")
